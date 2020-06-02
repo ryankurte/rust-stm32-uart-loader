@@ -1,4 +1,3 @@
-
 #[macro_use]
 extern crate log;
 
@@ -6,29 +5,27 @@ extern crate structopt;
 use structopt::StructOpt;
 
 extern crate simplelog;
-use simplelog::{SimpleLogger, LevelFilter, Config};
+use simplelog::{Config, LevelFilter, SimpleLogger};
 
-use stm32_uart_loader::{Programmer, Options};
+use stm32_uart_loader::{Options, Programmer};
 
 #[derive(Clone, Debug, StructOpt)]
 pub struct Args {
     /// Serial port to connect to
-    #[structopt(long, default_value="/dev/ttyUSB0")]
+    #[structopt(long, default_value = "/dev/ttyUSB0")]
     port: String,
 
     /// Serial port baud rate
-    #[structopt(long, default_value="57600")]
+    #[structopt(long, default_value = "57600")]
     baud: usize,
 
     #[structopt(flatten)]
     options: Options,
 
     /// Log level for console output
-    #[structopt(long, default_value="debug")]
+    #[structopt(long, default_value = "debug")]
     log_level: LevelFilter,
 }
-
-
 
 fn main() {
     // Parse out arguments
@@ -51,11 +48,25 @@ fn main() {
 
     if let Err(e) = p.init() {
         error!("Error connecting to bootloader: {:?}", e);
-        return
+        return;
     }
 
     info!("Bootloader connected!");
 
+    // TODO: build and execute command enum
+
+    info!("Reading chip ID");
+    match p.chip_id() {
+        Ok(id) => info!("ID: {:02x?}", id),
+        Err(e) => error!("Error reading memory: {:?}", e),
+    }
+
+    info!("Reading chip memory");
+    let mut data = [0u8; 10];
+    match p.read_mem(0x08000000, &mut data) {
+        Ok(_) => info!("Memory: {:02x?}", data),
+        Err(e) => error!("Error reading memory: {:?}", e),
+    }
+
+
 }
-
-
