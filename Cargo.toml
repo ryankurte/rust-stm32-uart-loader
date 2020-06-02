@@ -5,13 +5,18 @@ authors = ["ryan <ryan@kurte.nz>"]
 edition = "2018"
 
 [features]
-util = [ "serial-unix", "serial-core", "structopt" ]
+linux = [ "linux-embedded-hal" ]
+util = [ "linux", "structopt", "simplelog" ]
 default = [ "util" ]
 
 [dependencies]
-structopt = { version = "0.3.11", optional = true }
-serial-unix = { version = "0.4.0", optional = true }
-serial-core = { version = "0.4.0", optional = true }
+structopt = { version = "0.3.14", optional = true }
+embedded-hal = "0.2.3"
+linux-embedded-hal = { version = "0.3.0", optional = true }
+serial-core = "0.4.0"
+nb = "0.1.2"
+log = "0.4.8"
+simplelog = { version = "0.8.0", optional = true }
 
 
 [[bin]]
