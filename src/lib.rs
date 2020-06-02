@@ -10,6 +10,8 @@ extern crate log;
 #[macro_use(block)]
 extern crate nb;
 
+extern crate futures;
+
 extern crate embedded_hal;
 use embedded_hal::serial::{Write, Read};
 use embedded_hal::blocking::delay::DelayMs;
@@ -24,6 +26,7 @@ extern crate linux_embedded_hal;
 pub mod linux;
 
 pub const UART_DISC: u8 = 0x7F;
+
 pub const UART_ACK: u8 = 0x79;
 pub const UART_NACK: u8 = 0x1F;
 
@@ -62,15 +65,15 @@ pub struct Options {
     pub no_reset: bool,
 
     /// Timeout to wait for bootloader responses
-    #[cfg_attr(feature = "structopt", structopt(long, default_value="100"))]
+    #[cfg_attr(feature = "structopt", structopt(long, default_value="10"))]
     pub response_timeout_ms: u32,
 
     /// Period to poll for bootloader responses
-    #[cfg_attr(feature = "structopt", structopt(long, default_value="10"))]
+    #[cfg_attr(feature = "structopt", structopt(long, default_value="1"))]
     pub poll_delay_ms: u32,
 
     /// Period to wait for bootloader init before sending init character
-    #[cfg_attr(feature = "structopt", structopt(long, default_value="10"))]
+    #[cfg_attr(feature = "structopt", structopt(long, default_value="1"))]
     pub init_delay_ms: u32,
 }
 
@@ -230,12 +233,3 @@ where
 
 }
 
-
-
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
-    }
-}

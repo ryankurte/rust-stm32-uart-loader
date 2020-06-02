@@ -3,7 +3,7 @@ use std::io::{ErrorKind as IoErrorKind};
 use std::path::Path;
 
 use linux_embedded_hal::{Delay, Serial};
-use linux_embedded_hal::serial_core::{SerialDevice as _, SerialPortSettings as _, Error as SerialError, BaudRate, FlowControl, Parity};
+use linux_embedded_hal::serial_core::{SerialDevice as _, SerialPortSettings as _, Error as SerialError, BaudRate, FlowControl, Parity, StopBits};
 
 use crate::{SerialPort, Programmer, Options};
 
@@ -27,9 +27,12 @@ impl Programmer<Serial, Delay, IoErrorKind>
 
         // Apply settings
         let mut settings = port.0.read_settings()?;
+        
+        settings.set_stop_bits(StopBits::Stop1);
         settings.set_baud_rate(BaudRate::from_speed(baud))?;
         settings.set_flow_control(FlowControl::FlowNone);
         settings.set_parity(Parity::ParityEven);
+
         port.0.write_settings(&settings)?;
 
         // Return instance
