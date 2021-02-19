@@ -11,6 +11,12 @@ use stm32_uart_loader::{Options, Programmer};
 
 #[derive(Clone, Debug, StructOpt)]
 pub struct Args {
+    #[structopt(subcommand)]
+    command: Commands,
+
+    #[structopt(flatten)]
+    options: Options,
+
     /// Serial port to connect to
     #[structopt(long, default_value = "/dev/ttyUSB0")]
     port: String,
@@ -18,12 +24,6 @@ pub struct Args {
     /// Serial port baud rate
     #[structopt(long, default_value = "57600")]
     baud: usize,
-
-    #[structopt(subcommand)]
-    command: Commands,
-
-    #[structopt(flatten)]
-    options: Options,
 
     /// Log level for console output
     #[structopt(long, default_value = "info")]
@@ -82,7 +82,7 @@ fn main() -> Result<(), anyhow::Error> {
 
     debug!("Connecting to bootloader");
 
-    let mut p = Programmer::linux(&o.port, o.baud, o.options)
+    let mut p = Programmer::linux(&o.port, o.baud, o.options.clone())
         .context("Error connecting to bootloader")?;
 
     // Execute commands
@@ -122,6 +122,12 @@ fn main() -> Result<(), anyhow::Error> {
             p.erase_all()
                 .context("Error erasing pages")?;
         }
+    }
+
+    if !o.options.no_reset {
+        debug!("Resetting device to application");
+        p.reset(false)
+            .context("Error resetting device")?;
     }
 
     Ok(())
