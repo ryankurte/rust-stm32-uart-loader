@@ -1,10 +1,10 @@
+use std::{num::ParseIntError};
+
 #[macro_use]
 extern crate log;
 
-extern crate structopt;
+use anyhow::Context;
 use structopt::StructOpt;
-
-extern crate simplelog;
 use simplelog::{Config, LevelFilter, SimpleLogger};
 
 use stm32_uart_loader::{Options, Programmer};
@@ -19,54 +19,106 @@ pub struct Args {
     #[structopt(long, default_value = "57600")]
     baud: usize,
 
+    #[structopt(subcommand)]
+    command: Commands,
+
     #[structopt(flatten)]
     options: Options,
 
     /// Log level for console output
-    #[structopt(long, default_value = "debug")]
+    #[structopt(long, default_value = "info")]
     log_level: LevelFilter,
 }
 
-fn main() {
+
+#[derive(Clone, Debug, StructOpt)]
+pub enum Commands {
+    Read {
+        /// Offset from which to start memory read
+        #[structopt(long, parse(try_from_str=u32_from_hex), default_value="0x08000000")]
+        offset: u32,
+
+        /// Length of memory to read
+        #[structopt(long, parse(try_from_str=bytefmt::parse))]
+        length: u64,
+
+        /// File to read data into
+        #[structopt(long)]
+        file: String,
+    },
+    Write {
+        /// Offset from which to start memory write
+        #[structopt(long, parse(try_from_str=u32_from_hex), default_value="0x08000000")]
+        offset: u32,
+
+        /// File to read data from
+        #[structopt(long)]
+        file: String,
+    },
+    Erase {
+        /// Offset from which to start memory read
+        #[structopt(long, default_value="0")]
+        page_offset: u8,
+
+        /// Length of memory to read
+        #[structopt(long)]
+        page_count: u8,
+    },
+    EraseAll,
+    //ChipId,
+}
+
+fn u32_from_hex(s: &str) -> Result<u32, ParseIntError> {
+    let s = s.trim_start_matches("0x");
+    u32::from_str_radix(s, 16)
+}
+
+fn main() -> Result<(), anyhow::Error> {
     // Parse out arguments
     let o = Args::from_args();
 
     // Configure logger
     let _ = SimpleLogger::init(o.log_level, Config::default());
 
-    info!("Connecting to serial port");
+    debug!("Connecting to bootloader");
 
-    let mut p = match Programmer::linux(&o.port, o.baud, o.options) {
-        Ok(p) => p,
-        Err(e) => {
-            println!("Error connecting to serial port: {:?}", e);
-            return;
+    let mut p = Programmer::linux(&o.port, o.baud, o.options)
+        .context("Error connecting to bootloader")?;
+
+    // Execute commands
+    match &o.command {
+        Commands::Read{offset, length, file} => {
+            info!("Reading {} bytes from memory at offset 0x{:08x}", length, offset);
+
+            let mut data = vec![0u8; *length as usize];
+            p.read(*offset, &mut data).context("Error reading memory")?;
+
+            std::fs::write(file, data)
+                .context("Failure writing to file")?;
+        },
+
+        Commands::Write{offset, file} => {
+            let data = std::fs::read(file)
+                .context("Failure reading from file")?;
+
+            info!("Reading {} bytes from memory at offset 0x{:08x}", data.len(), offset);
+
+            p.write(*offset, &data)
+                .context("Error writing memory")?;
+        },
+        Commands::Erase{page_offset, page_count} => {
+            info!("Erasing {} pages from index {}", page_count, page_offset);
+
+            p.erase(*page_offset, *page_count)
+                .context("Error erasing pages")?;
+        },
+        Commands::EraseAll => {
+            info!("Erasing entire device flash");
+
+            p.erase_all()
+                .context("Error erasing pages")?;
         }
-    };
-
-    info!("Connecting to bootloader");
-
-    if let Err(e) = p.init() {
-        error!("Error connecting to bootloader: {:?}", e);
-        return;
     }
 
-    info!("Bootloader connected!");
-
-    // TODO: build and execute command enum
-
-    info!("Reading chip ID");
-    match p.chip_id() {
-        Ok(id) => info!("ID: {:02x?}", id),
-        Err(e) => error!("Error reading memory: {:?}", e),
-    }
-
-    info!("Reading chip memory");
-    let mut data = [0u8; 10];
-    match p.read_mem(0x08000000, &mut data) {
-        Ok(_) => info!("Memory: {:02x?}", data),
-        Err(e) => error!("Error reading memory: {:?}", e),
-    }
-
-
+    Ok(())
 }

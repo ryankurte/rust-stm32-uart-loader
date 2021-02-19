@@ -2,19 +2,19 @@ use std::io::ErrorKind as IoErrorKind;
 use std::path::Path;
 
 use linux_embedded_hal::serial_core::{
-    BaudRate, CharSize, Error as SerialError, FlowControl, Parity, SerialDevice as _,
+    BaudRate, CharSize, FlowControl, Parity, SerialDevice as _,
     SerialPortSettings as _, StopBits,
 };
 use linux_embedded_hal::{Delay, Serial};
 
 use crate::{Options, Programmer, SerialPort};
 
-impl SerialPort<std::io::ErrorKind> for Serial {
-    fn set_rts(&mut self, level: bool) -> Result<(), std::io::ErrorKind> {
+impl SerialPort<IoErrorKind> for Serial {
+    fn set_rts(&mut self, level: bool) -> Result<(), IoErrorKind> {
         self.0.set_rts(level).unwrap();
         Ok(())
     }
-    fn set_dtr(&mut self, level: bool) -> Result<(), std::io::ErrorKind> {
+    fn set_dtr(&mut self, level: bool) -> Result<(), IoErrorKind> {
         self.0.set_dtr(level).unwrap();
         Ok(())
     }
@@ -26,7 +26,7 @@ impl Programmer<Serial, Delay, IoErrorKind> {
         port: P,
         baud: usize,
         options: Options,
-    ) -> Result<Self, SerialError> {
+    ) -> Result<Self, anyhow::Error> {
         // Open port
         let mut port = Serial::open(port.as_ref())?;
 
@@ -42,6 +42,8 @@ impl Programmer<Serial, Delay, IoErrorKind> {
         port.0.write_settings(&settings)?;
 
         // Return instance
-        Ok(Self::new(port, Delay {}, options))
+        let s = Self::new(port, Delay {}, options)?;
+
+        Ok(s)
     }
 }

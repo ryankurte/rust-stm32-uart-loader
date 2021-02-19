@@ -2,19 +2,17 @@
 //!
 //! Base on AN3155
 
+use core::fmt::Debug;
 use core::marker::PhantomData;
 
-#[macro_use]
-extern crate log;
+use log::{trace, debug, info, error};
 
-#[macro_use(block)]
-extern crate nb;
+use nb::block;
+use thiserror::Error;
 
-extern crate futures;
-
-extern crate embedded_hal;
 use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::serial::{Read, Write};
+
 
 #[cfg(Feature = "structopt")]
 extern crate structopt;
@@ -30,29 +28,31 @@ pub const UART_DISC: u8 = 0x7F;
 pub const UART_ACK: u8 = 0x79;
 pub const UART_NACK: u8 = 0x1F;
 
+/// SerialPort trait wrapping embedded-hal with rts/dtr commands
 pub trait SerialPort<E>: Write<u8, Error = E> + Read<u8, Error = E> {
     fn set_rts(&mut self, level: bool) -> Result<(), E>;
     fn set_dtr(&mut self, level: bool) -> Result<(), E>;
 }
 
-#[derive(Copy, Clone, PartialEq, Debug)]
-pub enum State {
-    Init,
-    Discovery,
-}
-
-#[derive(Clone, PartialEq, Debug)]
-pub enum Error<SerialError> {
+#[derive(Error, Clone, PartialEq, Debug)]
+pub enum Error<SerialError: Debug> {
+    #[error("Serial device error: {0:?}")]
     Serial(SerialError),
+    #[error("Nack")]
     Nack,
+    #[error("NoAck")]
     NoAck,
+    #[error("Timeout")]
     Timeout,
+    #[error("InvalidResponse")]
     InvalidResponse,
+    #[error("BufferLength")]
     BufferLength,
+    #[error("Io error: {0:?}")]
     Io(std::io::ErrorKind),
 }
 
-impl<SerialError> From<SerialError> for Error<SerialError> {
+impl<SerialError: Debug> From<SerialError> for Error<SerialError> {
     fn from(e: SerialError) -> Self {
         Self::Serial(e)
     }
@@ -118,7 +118,6 @@ pub enum Command {
 }
 
 pub struct Programmer<P, D, E> {
-    state: State,
     options: Options,
     port: P,
     delay: D,
@@ -131,29 +130,22 @@ where
     D: DelayMs<u32>,
     E: core::fmt::Debug,
 {
-    /// Create a new programmer instance
-    pub fn new(port: P, delay: D, options: Options) -> Self {
-        Self {
-            state: State::Init,
+    /// Create a new programmer instance and connect to the attached bootloader
+    pub fn new(port: P, delay: D, options: Options) -> Result<Self, Error<E>> {
+        let mut s = Self {
             options,
             port,
             delay,
             _err: PhantomData,
-        }
+        };
+
+        s.init()?;
+
+        Ok(s)
     }
 
-    /// Fetch the programmer state
-    pub fn state(&mut self) -> State {
-        self.state
-    }
-
-    /// Execute the programmer
-    pub fn run(&mut self) -> Result<(), Error<E>> {
-        // Initialise bootloading
-        self.init()
-    }
-
-    pub fn init(&mut self) -> Result<(), Error<E>> {
+    // Initialise the programmer/bootloader
+    fn init(&mut self) -> Result<(), Error<E>> {
         // First, reset device
         debug!("Resetting device");
 
@@ -162,7 +154,8 @@ where
         debug!("Sending discovery character");
 
         // Then, send discovery character
-        self.port.write(UART_DISC).unwrap();
+        block!(self.port.write(UART_DISC)).unwrap();
+        block!(self.port.flush()).unwrap();
 
         // Wait for a response
         debug!("Awaiting bootloader response");
@@ -176,22 +169,14 @@ where
         let version = self.info()?;
         debug!("Bootloader version: 0x{:02x}", version);
 
-        //debug!("Reading chip ID");
-        //let id = self.chip_id()?;
-        //debug!("ID: 0x{:04x}", id);
-
-        self.delay.delay_ms(100);
-
-        let mut data = [0u8; 10];
-        self.read_mem(0x08000000, &mut data)?;
-        debug!("Memory: {:02x?}", data);
-
         self.delay.delay_ms(100);
 
         // Return ok
         Ok(())
     }
 
+    /// Fetch bootloader info byte
+    // TODO: there's more useful info than just this?
     pub fn info(&mut self) -> Result<u8, Error<E>> {
         let mut data = [0u8; 12];
 
@@ -202,7 +187,7 @@ where
         self.await_ack()?;
 
         // Read comand length
-        let n = self.read_char()? as usize;
+        let n = self.read_char()? as usize + 1;
 
         debug!("Reading {} bytes", n);
 
@@ -216,46 +201,150 @@ where
             data[i] = self.read_char()?;
         }
 
-        debug!("Received: {:02x?}", &data[..n]);
+        // Await final ack
+        self.await_ack()?;
+
+        debug!("Received: 0x{:02x?}", &data[..n]);
 
         Ok(data[0])
     }
 
-    /// Read memory block-by-block
-    pub fn read_mem(&mut self, addr: u32, data: &mut [u8]) -> Result<(), Error<E>> {
+    /// Erase pages by page offset and count
+    pub fn erase(&mut self, page_offset: u8, page_count: u8) -> Result<(), Error<E>> {
+
+        debug!("Erasing {} pages from index {}", page_count, page_offset);
+        let pages: Vec<u8> = (page_count..page_offset+page_count).collect();
+
+        self.erase_pages(&pages)
+    }
+
+    /// Erase pages by page number
+    pub fn erase_pages(&mut self, pages: &[u8]) -> Result<(), Error<E>> {
+        // Write command
+        self.write_cmd(Command::Erase)?;
+        self.await_ack()?;
+
+        // Write number of pages
+        let len = (pages.len() - 1) as u8;
+        block!(self.port.write(len))?;
+
+        // Write page list
+        self.write_bytes_csum(pages)?;
+
+        self.await_ack()
+    }
+
+    /// Erase the entire flash
+    pub fn erase_all(&mut self) -> Result<(), Error<E>> {
+        // Write command
+        self.write_cmd(Command::Erase)?;
+        self.await_ack()?;
+
+        self.write_bytes(&[0xFF, 0x00])?;
+        self.await_ack()?;
+
+        Ok(())
+    }
+
+    /// Read memory from the device
+    pub fn read(&mut self, addr: u32, data: &mut [u8]) -> Result<(), Error<E>> {
         let mut index = 0;
 
-        while index < data.len() {
-            let n = (data.len() - index).min(256);
+        for chunk in data.chunks_mut(128) {
+            debug!("Read chunk at 0x{:08x}, length: {}", addr + index as u32, chunk.len());
 
-            self.read_mem_block(addr + index as u32, &mut data[index..])?;
+            self.read_mem_block(addr + index as u32, &mut chunk[..])?;
 
-            index += n;
+            index += chunk.len();
         }
 
         Ok(())
     }
 
     fn read_mem_block(&mut self, addr: u32, data: &mut [u8]) -> Result<(), Error<E>> {
-
-        assert!(data.len() <= 256, "blocks must be less than 256 bytes");
+        assert!(data.len() <= 256, "block size must be less than 256 bytes");
 
         // Write read command and await ack
         self.write_cmd(Command::ReadMemory)?;
         self.await_ack()?;
         
-        // Write start address and await ack
-        let addr= [(addr >> 24) as u8, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8];
-        self.write_csum(&addr)?;
-        self.await_ack()?;
-        
-        let len =  [data.len() as u8];
-        self.write_csum(&len)?;
+
+        // Write start address + xor checksum and await ack
+        let addr = [(addr >> 24) as u8, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8];
+        let addr_csum = addr[0] ^ addr[1] ^ addr[2] ^ addr[3];
+
+        for a in &addr {
+            block!(self.port.write(*a))?;
+        }
+        block!(self.port.write(addr_csum))?;
+        block!(self.port.flush())?;
+
         self.await_ack()?;
 
+
+        // Write read length and checksum and await ack
+        let len = (data.len() - 1) as u8;
+        self.write_bytes(&[len, !len])?;
+
+        self.await_ack()?;
+
+        // Read response data
         for i in 0..data.len() {
             data[i] = self.read_char()?;
         }
+
+        Ok(())
+    }
+
+    /// Write memory to the device
+    pub fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), Error<E>> {
+        let mut index = 0;
+
+        for chunk in data.chunks(128) {
+            debug!("Write chunk at 0x{:08x}, length: {}", addr + index as u32, chunk.len());
+
+            self.write_mem_block(addr + index as u32, &chunk[..])?;
+
+            index += chunk.len();
+        }
+
+        Ok(())
+    }
+
+    fn write_mem_block(&mut self, addr: u32, data: &[u8]) -> Result<(), Error<E>> {
+        assert!(data.len() <= 256, "block size must be less than 256 bytes");
+
+        // Write read command and await ack
+        self.write_cmd(Command::WriteMemory)?;
+        self.await_ack()?;
+        
+
+        // Write start address + xor checksum and await ack
+        let addr = [(addr >> 24) as u8, (addr >> 16) as u8, (addr >> 8) as u8, addr as u8];
+        let addr_csum = addr[0] ^ addr[1] ^ addr[2] ^ addr[3];
+
+        for a in &addr {
+            block!(self.port.write(*a))?;
+        }
+        block!(self.port.write(addr_csum))?;
+        block!(self.port.flush())?;
+
+        self.await_ack()?;
+
+
+        // Set write length and checksum and await ack
+        let len = (data.len() - 1) as u8;
+        let mut data_csum = len;
+
+        block!(self.port.write(len))?;
+        for d in data {
+            data_csum ^= *d;
+            block!(self.port.write(*d))?;
+        }
+        block!(self.port.write(data_csum))?;
+
+        self.await_ack()?;
+
 
         Ok(())
     }
@@ -296,12 +385,21 @@ where
         self.await_ack()?;
 
         // Read N (static sized)
-        let _n = self.read_char()?;
+        let n = self.read_char()? as usize + 1;
 
-        let b1 = self.read_char()?;
-        let b2 = self.read_char()?;
+        debug!("Reading {} byte chip ID", n);
 
-        Ok((b1 as u16) << 8 | b2 as u16)
+        // Read chip ID
+        let mut v: u16 = 0;
+        for i in 0..n {
+            let c = self.read_char()?;
+            v |= (c as u16) << (i * 8);
+        }
+
+        // Await ACK
+        self.await_ack()?;
+
+        Ok(v)
     }
 
     /// Write a bootloader command to the device
@@ -314,22 +412,39 @@ where
 
         block!(self.port.write(c1))?;
         block!(self.port.write(c2))?;
+        block!(self.port.flush())?;
+
+        Ok(())
+    }
+
+    pub fn write_bytes(&mut self, data: &[u8]) -> Result<(), Error<E>> {
+
+        debug!("Writing bytes: 0x{:02x?}", data);
+
+        for d in data {
+            block!(self.port.write(*d))?;
+        }
+
+        block!(self.port.flush())?;
 
         Ok(())
     }
 
     /// Write data with xor checksum
-    pub fn write_csum(&mut self, data: &[u8]) -> Result<(), Error<E>> {
+    pub fn write_bytes_csum(&mut self, data: &[u8]) -> Result<(), Error<E>> {
         let mut csum = 0x00;
-
-        info!("Writing data with checksum: {:02x?}", data);
-
         for d in data {
             csum ^= *d;
+        }
+
+        info!("Writing data with checksum: {:02x?} ({:02x})", data, csum);
+
+        for d in data {
             block!(self.port.write(*d))?;
         }
 
         block!(self.port.write(csum))?;
+        block!(self.port.flush())?;
 
         Ok(())
     }
@@ -362,11 +477,11 @@ where
         let v = self.read_char()?;
         match v {
             UART_ACK => {
-                debug!("Received ACK!");
+                trace!("Received ACK!");
                 Ok(())
             },
             UART_NACK => {
-                debug!("Received NACK?!@");
+                trace!("Received NACK?!");
                 Err(Error::Nack)
             },
             _ => {
