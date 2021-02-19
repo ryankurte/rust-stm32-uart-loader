@@ -76,6 +76,18 @@ pub struct Options {
     pub no_progress: bool,
 }
 
+impl Default for Options {
+    fn default() -> Self {
+        Self {
+            no_reset: false,
+            no_progress: false,
+            response_timeout_ms: 100,
+            poll_delay_ms: 10,
+            init_delay_ms: 100,
+        }
+    }
+}
+
 pub struct Programmer<P, D, E> {
     options: Options,
     port: P,
