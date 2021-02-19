@@ -1,5 +1,6 @@
 [package]
 name = "stm32-uart-loader"
+description = "Library and utility for interacting with the STM32 factory UART bootloader"
 repository = "https://github.com/ryankurte/rust-stm32-uart-loader"
 version = "0.1.0"
 authors = ["ryan <ryan@kurte.nz>"]
