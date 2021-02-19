@@ -13,20 +13,14 @@ use thiserror::Error;
 use embedded_hal::blocking::delay::DelayMs;
 use embedded_hal::serial::{Read, Write};
 
-
-#[cfg(Feature = "structopt")]
-extern crate structopt;
-
 #[cfg(feature = "linux")]
 extern crate linux_embedded_hal;
-
 #[cfg(feature = "linux")]
 pub mod linux;
 
-pub const UART_DISC: u8 = 0x7F;
+pub mod protocol;
+use protocol::*;
 
-pub const UART_ACK: u8 = 0x79;
-pub const UART_NACK: u8 = 0x1F;
 
 /// SerialPort trait wrapping embedded-hal with rts/dtr commands
 pub trait SerialPort<E>: Write<u8, Error = E> + Read<u8, Error = E> {
@@ -76,45 +70,10 @@ pub struct Options {
     /// Period to wait for bootloader init before sending init character
     #[cfg_attr(feature = "structopt", structopt(long, default_value = "100"))]
     pub init_delay_ms: u32,
-}
 
-#[derive(Debug, PartialEq, Clone)]
-pub enum Command {
-    /// Fetch bootloader version and allowed commands
-    Get = 0x00,
-
-    /// Gets the bootloader version and the Read Protection status of the Flash memory.
-    GetVersionReadStatus = 0x01,
-    
-    /// Gets the chip ID
-    GetId = 0x02,
-
-    /// Reads up to 256 bytes of memory starting from an address specified by the application.
-    ReadMemory = 0x11,
-
-    /// Jumps to user application code located in the internal Flash memory or in the SRAM.
-    Go = 0x21,
-
-    /// Writes up to 256 bytes to the RAM or Flash memory starting from an address specified by the application.
-    WriteMemory = 0x31,
-
-    /// Erases from one to all the Flash memory pages.
-    Erase = 0x43,
-
-    /// Erases from one to all the Flash memory pages using two byte addressing mode (available only for v3.0 USART bootloader versions and above).
-    ExtendedErase = 0x44,
-
-    /// Enables the write protection for some sectors.
-    WriteProtect = 0x63,
-
-    /// Disables the write protection for all Flash memory sectors
-    WriteUnprotect = 0x73,
-
-    /// Enables the read protection
-    ReadoutProtect = 0x82,
-
-    /// Disables the read protection.
-    ReadoutUnprotect = 0x92,
+    /// Disable progress bars during operations
+    #[cfg_attr(feature = "structopt", structopt(long))]
+    pub no_progress: bool,
 }
 
 pub struct Programmer<P, D, E> {
@@ -249,13 +208,34 @@ where
     /// Read memory from the device
     pub fn read(&mut self, addr: u32, data: &mut [u8]) -> Result<(), Error<E>> {
         let mut index = 0;
+        
+        // Setup progress bar _if_ enabled
+        #[cfg(feature="indicatif")]
+        let mut p = match !self.options.no_progress {
+            true => {
+                let pb = indicatif::ProgressBar::new(data.len() as u64);
 
-        for chunk in data.chunks_mut(128) {
+                pb.set_style(indicatif::ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:80.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                    .progress_chars("#>-"));
+
+                Some(pb)
+            },
+            _ => None,
+        };
+
+        for chunk in data.chunks_mut(MAX_CHUNK as usize) {
             debug!("Read chunk at 0x{:08x}, length: {}", addr + index as u32, chunk.len());
 
             self.read_mem_block(addr + index as u32, &mut chunk[..])?;
 
             index += chunk.len();
+
+            // Update progress bar (if enabled)
+            #[cfg(feature="indicatif")]
+            if let Some(p) = &mut p {
+                p.inc(chunk.len() as u64)
+            }
         }
 
         Ok(())
@@ -300,12 +280,33 @@ where
     pub fn write(&mut self, addr: u32, data: &[u8]) -> Result<(), Error<E>> {
         let mut index = 0;
 
-        for chunk in data.chunks(128) {
+        // Setup progress bar _if_ enabled
+        #[cfg(feature="indicatif")]
+        let mut p = match !self.options.no_progress {
+            true => {
+                let pb = indicatif::ProgressBar::new(data.len() as u64);
+
+                pb.set_style(indicatif::ProgressStyle::default_bar()
+                    .template("{spinner:.green} [{elapsed_precise}] [{bar:80.cyan/blue}] {bytes}/{total_bytes} ({eta})")
+                    .progress_chars("#>-"));
+
+                Some(pb)
+            },
+            _ => None,
+        };
+
+        for chunk in data.chunks(MAX_CHUNK as usize) {
             debug!("Write chunk at 0x{:08x}, length: {}", addr + index as u32, chunk.len());
 
             self.write_mem_block(addr + index as u32, &chunk[..])?;
 
             index += chunk.len();
+
+            // Update progress bar (if enabled)
+            #[cfg(feature="indicatif")]
+            if let Some(p) = &mut p {
+                p.inc(chunk.len() as u64)
+            }
         }
 
         Ok(())

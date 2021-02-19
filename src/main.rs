@@ -95,16 +95,20 @@ fn main() -> Result<(), anyhow::Error> {
 
             std::fs::write(file, data)
                 .context("Failure writing to file")?;
+
+            info!("Read complete!");
         },
 
         Commands::Write{offset, file} => {
             let data = std::fs::read(file)
                 .context("Failure reading from file")?;
 
-            info!("Reading {} bytes from memory at offset 0x{:08x}", data.len(), offset);
+            info!("Writing {} bytes to memory at offset 0x{:08x}", data.len(), offset);
 
             p.write(*offset, &data)
                 .context("Error writing memory")?;
+
+            info!("Write complete!");
         },
         Commands::Erase{page_offset, page_count} => {
             info!("Erasing {} pages from index {}", page_count, page_offset);
